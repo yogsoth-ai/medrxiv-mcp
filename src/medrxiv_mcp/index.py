@@ -134,44 +134,47 @@ def resolve(doi: str) -> str | None:
     """DOI -> .meca s3 key. Uses sqlite cache; scans the month then Back_Content on miss."""
     doi = doi.strip().lower()
     conn = _db()
-    row = conn.execute("SELECT s3_key FROM doi_key WHERE doi=?", (doi,)).fetchone()
-    if row:
+    try:
+        row = conn.execute("SELECT s3_key FROM doi_key WHERE doi=?", (doi,)).fetchone()
+        if row:
+            return row[0]
+
+        folders: list[str] = []
+        month = doi_to_month(doi)
+        if month:
+            folders.append(f"Current_Content/{month}")
+
+        for folder in folders:
+            if conn.execute("SELECT 1 FROM scanned WHERE folder=?", (folder,)).fetchone():
+                continue
+            mapping = _scan_folder(folder)
+            with conn:
+                conn.executemany("INSERT OR REPLACE INTO doi_key VALUES (?,?)",
+                                 [(k.lower(), v) for k, v in mapping.items()])
+                conn.execute("INSERT OR REPLACE INTO scanned VALUES (?)", (folder,))
+            if doi in (k.lower() for k in mapping):
+                break
+
+        row = conn.execute("SELECT s3_key FROM doi_key WHERE doi=?", (doi,)).fetchone()
+        if row:
+            return row[0]
+
+        # Fallback: scan Back_Content batches (older papers). Rare; can be slow.
+        # Only attempt when month is known — if doi_to_month returned None the DOI
+        # is unrecognised (typo / wrong server) and Back_Content cannot help.
+        if month:
+            for folder in _back_content_folders():
+                if conn.execute("SELECT 1 FROM scanned WHERE folder=?", (folder,)).fetchone():
+                    continue
+                mapping = _scan_folder(folder)
+                with conn:
+                    conn.executemany("INSERT OR REPLACE INTO doi_key VALUES (?,?)",
+                                     [(k.lower(), v) for k, v in mapping.items()])
+                    conn.execute("INSERT OR REPLACE INTO scanned VALUES (?)", (folder,))
+                if doi in (k.lower() for k in mapping):
+                    break
+
+        row = conn.execute("SELECT s3_key FROM doi_key WHERE doi=?", (doi,)).fetchone()
+        return row[0] if row else None
+    finally:
         conn.close()
-        return row[0]
-
-    folders: list[str] = []
-    month = doi_to_month(doi)
-    if month:
-        folders.append(f"Current_Content/{month}")
-
-    for folder in folders:
-        if conn.execute("SELECT 1 FROM scanned WHERE folder=?", (folder,)).fetchone():
-            continue
-        mapping = _scan_folder(folder)
-        with conn:
-            conn.executemany("INSERT OR REPLACE INTO doi_key VALUES (?,?)",
-                             [(k.lower(), v) for k, v in mapping.items()])
-            conn.execute("INSERT OR REPLACE INTO scanned VALUES (?)", (folder,))
-        if doi in (k.lower() for k in mapping):
-            break
-
-    row = conn.execute("SELECT s3_key FROM doi_key WHERE doi=?", (doi,)).fetchone()
-    if row:
-        conn.close()
-        return row[0]
-
-    # Fallback: scan Back_Content batches (older papers). Rare; can be slow.
-    for folder in _back_content_folders():
-        if conn.execute("SELECT 1 FROM scanned WHERE folder=?", (folder,)).fetchone():
-            continue
-        mapping = _scan_folder(folder)
-        with conn:
-            conn.executemany("INSERT OR REPLACE INTO doi_key VALUES (?,?)",
-                             [(k.lower(), v) for k, v in mapping.items()])
-            conn.execute("INSERT OR REPLACE INTO scanned VALUES (?)", (folder,))
-        if doi in (k.lower() for k in mapping):
-            break
-
-    row = conn.execute("SELECT s3_key FROM doi_key WHERE doi=?", (doi,)).fetchone()
-    conn.close()
-    return row[0] if row else None

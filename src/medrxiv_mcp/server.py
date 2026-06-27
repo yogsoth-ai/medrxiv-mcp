@@ -31,7 +31,10 @@ def fetch_fulltext(doi: str) -> str:
         return (f"Could not find DOI {doi} in {config.SERVER}. "
                 f"If this is a {other} preprint, use the {other}-mcp server instead.")
     meca = fetch.download_meca(s3_key)
-    jats = fetch.extract_jats(meca)
+    try:
+        jats = fetch.extract_jats(meca)
+    except ValueError:
+        return f"Downloaded the source package for {doi} but found no extractable full-text XML in it."
     return convert.jats_to_markdown(jats)
 
 
